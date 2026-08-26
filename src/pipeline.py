@@ -123,7 +123,7 @@ def main() -> None:
 
     program_date = args.date
     if program_date is None:
-        captured_date = input("Fecha del Programa (dd/mm/aaaa, Enter para conservar B3): ").strip()
+        captured_date = input("Fecha del Programa (dd/mm/aaaa, Enter para conservar B5): ").strip()
         if captured_date:
             program_date = parse_program_date(captured_date)
 

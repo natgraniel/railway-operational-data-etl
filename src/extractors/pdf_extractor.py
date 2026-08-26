@@ -108,25 +108,76 @@ def _group_words_into_lines(words: list[dict]) -> list[list[dict]]:
 def _tokens(line_words: list[dict]) -> list[str]:
     return [w["text"] for w in line_words]
 
+def _find_shared_registrations(
+    token_lines: list[list[str]],
+) -> dict[int, str]:
+    """Associate a vertically centred registration with adjacent service lines."""
+    shared_registrations: dict[int, str] = {}
 
-def _parse_commercial_line(tokens: list[str], raw_line: str) -> CommercialRecord | None:
-    """
-    Expected token shape (see docs/02_data_dictionary.md, Table 1):
-    Station TS-code Registration '-' [times...] Service Route [Observations...]
+    for center_idx, tokens in enumerate(token_lines):
+        if len(tokens) < 3:
+            continue
 
-    Example tokens:
-    ['Palenque', 'TS30', 'L010', '-', '07h40', '08h40', '101', 'Palenque-Cancún', 'Tren', 'de', '7', 'coches']
+        if not tokens[1].startswith("TS"):
+            continue
+
+        registration = tokens[2]
+        if not REGISTRATION_RE.match(registration):
+            continue
+
+        # A normal commercial row already contains its own service and
+        # must continue through the standard parser.
+        if any(SERVICE_RE.match(token) for token in tokens):
+            continue
+
+        for neighbor_idx in (center_idx - 1, center_idx + 1):
+            if not 0 <= neighbor_idx < len(token_lines):
+                continue
+
+            neighbor_tokens = token_lines[neighbor_idx]
+            has_service = any(
+                SERVICE_RE.match(token) for token in neighbor_tokens
+            )
+            has_registration = any(
+                REGISTRATION_RE.match(token) for token in neighbor_tokens
+            )
+
+            if has_service and not has_registration:
+                shared_registrations[neighbor_idx] = registration
+
+    return shared_registrations
+
+def _parse_commercial_line(
+    tokens: list[str],
+    raw_line: str,
+    shared_registration: str | None = None,
+) -> CommercialRecord | None:
     """
-    if len(tokens) < 4:
-        return None
-    if not REGISTRATION_RE.match(tokens[2]):
-        return None
+    Parse a standard commercial line or a service line whose registration
+    is stored in a vertically centred adjacent row.
+    """
+    if shared_registration is None:
+        if len(tokens) < 4:
+            return None
+
+        if not REGISTRATION_RE.match(tokens[2]):
+            return None
+
+        registration = tokens[2]
+        service_search_start = 3
+    else:
+        if not REGISTRATION_RE.match(shared_registration):
+            return None
+
+        registration = shared_registration
+        service_search_start = 0
 
     service_idx = None
-    for i in range(3, len(tokens)):
+    for i in range(service_search_start, len(tokens)):
         if SERVICE_RE.match(tokens[i]):
             service_idx = i
             break
+
     if service_idx is None:
         return None
 
@@ -135,7 +186,7 @@ def _parse_commercial_line(tokens: list[str], raw_line: str) -> CommercialRecord
 
     return CommercialRecord(
         service=service,
-        registration=tokens[2],
+        registration=registration,
         route=route,
         raw_line=raw_line,
     )
@@ -167,6 +218,47 @@ def _parse_reserve_line(tokens: list[str], raw_line: str) -> ReserveRecord | Non
         raw_line=raw_line,
     )
 
+def _parse_useful_commercial_line(
+    tokens: list[str],
+    raw_line: str,
+) -> ReserveRecord | None:
+    """Parse an available train as a reserve with a blank output status."""
+    if len(tokens) < 4:
+        return None
+
+    ts_idx = next(
+        (
+            index
+            for index, token in enumerate(tokens)
+            if re.match(r"^TS\d+$", token)
+        ),
+        None,
+    )
+    if ts_idx is None or ts_idx + 2 >= len(tokens):
+        return None
+
+    station = " ".join(tokens[:ts_idx]).strip()
+    registration = tokens[ts_idx + 1]
+    availability_marker = tokens[ts_idx + 2]
+
+    if not station:
+        return None
+
+    if not REGISTRATION_RE.match(registration):
+        return None
+
+    # Useful trains show '-' after the registration. Rows with a date
+    # belong to maintenance or other non-available conditions.
+    if availability_marker != "-":
+        return None
+
+    return ReserveRecord(
+        workshop_station=station,
+        registration=registration,
+        status="RESERVA",
+        raw_line=raw_line,
+    )
+
 
 def _is_maintenance_or_non_productive(tokens: list[str]) -> bool:
     """
@@ -191,26 +283,49 @@ class PDFExtractor:
     def extract(self, pdf_path: str) -> PDFExtractionResult:
         result = PDFExtractionResult()
         in_non_productive_section = False
+        in_useful_commercial_section = False
 
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
                 words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
                 lines = _group_words_into_lines(words)
+                token_lines = [_tokens(line_words) for line_words in lines]
+                shared_registrations = _find_shared_registrations(token_lines)
 
-                for line_words in lines:
-                    tokens = _tokens(line_words)
+                for line_idx, tokens in enumerate(token_lines):
                     raw_line = " ".join(tokens)
 
                     if not tokens:
                         continue
 
+                    if (
+                        tokens[0] == "TRENES"
+                        and "UTILES" in tokens
+                        and "COMERCIAL" in tokens
+                    ):
+                        in_useful_commercial_section = True
+                        result.skipped_lines.append(raw_line)
+                        continue
+
                     if tokens[0] == "TRENES" and "PRODUCTIVOS" in tokens:
+                        in_useful_commercial_section = False
                         in_non_productive_section = True
                         result.skipped_lines.append(raw_line)
                         continue
 
                     if in_non_productive_section:
                         result.skipped_lines.append(raw_line)
+                        continue
+
+                    if in_useful_commercial_section:
+                        useful_record = _parse_useful_commercial_line(
+                            tokens,
+                            raw_line,
+                        )
+                        if useful_record:
+                            result.reserve.append(useful_record)
+                        else:
+                            result.skipped_lines.append(raw_line)
                         continue
 
                     if _is_maintenance_or_non_productive(tokens):
@@ -222,7 +337,11 @@ class PDFExtractor:
                         result.reserve.append(reserve_record)
                         continue
 
-                    commercial_record = _parse_commercial_line(tokens, raw_line)
+                    commercial_record = _parse_commercial_line(
+                        tokens, 
+                        raw_line,
+                        shared_registrations.get(line_idx),
+                    )
                     if commercial_record:
                         result.commercial_services.append(commercial_record)
                         continue

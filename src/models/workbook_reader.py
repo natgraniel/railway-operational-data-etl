@@ -117,10 +117,14 @@ class WorkbookReader:
             is_fully_empty = all(v is None for v in row_values)
 
             if is_fully_empty:
-                current_section = None
+                # Blank separator rows are allowed inside the commercial
+                # section; it ends when an explicit heading is found.
+                if current_section != "Circulaciones comerciales":
+                    current_section = None
+
                 row += 1
                 continue
-
+            
             circulacion_val = ws.cell(row=row, column=COL_CIRCULACION).value
 
             # Skip the column-header row that immediately follows the

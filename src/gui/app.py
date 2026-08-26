@@ -14,7 +14,7 @@ from src.utils.shared_workspace import SharedWorkspace
 from src.utils.source_date import extract_fleet_forecast_date, extract_operations_report_date
 
 DEFAULT_DESTINATION = Path(
-    r"\\tmmertru09\Seguridad_Circulacion\Direccion de Circulacion Ferroviaria\Previsión de Trenes_2026\Julio_2026"
+    r"\\tmmertru09\Seguridad_Circulacion\Direccion de Circulacion Ferroviaria\Previsión de Trenes_2026\Agosto_2026"
 )
 
 

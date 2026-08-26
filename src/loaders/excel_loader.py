@@ -19,7 +19,8 @@ COL_STATION = 2
 COL_REGISTRATION = 4
 COL_TICKETS = 5
 COL_RESERVE_STATUS = 5
-CELL_PROGRAM_DATE = "B3"
+PROGRAM_DATE_ROW = 5
+PROGRAM_DATE_COLUMN = 2
 TEST_ROW = 68
 RESERVE_HEADER_ROW = 69
 TEST_TRAIN_COLUMN = 2
@@ -86,11 +87,29 @@ class ExcelLoader:
         worksheet = workbook[SHEET_NAME]
         normalized_test_trains = self._normalize_test_trains(test_trains or [])
 
-        if program_date is not None:
-            self._write(worksheet, 3, 2, format_program_date(program_date))
+        test_header_row = self._find_section_row(worksheet, "Pruebas")
+        test_row = test_header_row + 1
+        reserve_header_row = self._find_section_row(worksheet, "Reserva")
 
-        added_test_rows = self._prepare_test_rows(worksheet, len(normalized_test_trains))
-        self._write_test_trains(worksheet, normalized_test_trains)
+        if program_date is not None:
+            self._write(
+                worksheet,
+                PROGRAM_DATE_ROW,
+                PROGRAM_DATE_COLUMN,
+                format_program_date(program_date),
+        )
+
+        added_test_rows = self._prepare_test_rows(
+            worksheet,
+            len(normalized_test_trains),
+            test_row,
+            reserve_header_row,
+        )
+        self._write_test_trains(
+            worksheet,
+            normalized_test_trains,
+            test_row,
+        )
 
         self._synchronize_commercial_registration_merges(
             worksheet, validated_updates.commercial_updates
@@ -102,7 +121,7 @@ class ExcelLoader:
         self._rebuild_reserve_section(
             worksheet,
             validated_updates.reserve_updates,
-            reserve_header_row=RESERVE_HEADER_ROW + added_test_rows,
+            reserve_header_row=reserve_header_row + added_test_rows,
         )
 
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -113,6 +132,24 @@ class ExcelLoader:
             ticket_updates_written=len(validated_updates.ticket_updates),
             reserve_updates_written=len(validated_updates.reserve_updates),
             test_train_written=bool(normalized_test_trains),
+        )
+
+    @staticmethod
+    def _find_section_row(worksheet, section_name: str) -> int:
+        """Return the row containing a section heading in the worksheet."""
+        expected_name = section_name.strip().casefold()
+
+        for row in worksheet.iter_rows():
+            for cell in row:
+                value = cell.value
+                if (
+                    isinstance(value, str)
+                    and value.strip().casefold() == expected_name
+                ):
+                    return cell.row
+
+        raise ValueError(
+            f"Programa template does not contain the '{section_name}' section."
         )
 
     @staticmethod
@@ -155,7 +192,12 @@ class ExcelLoader:
         return f"{hours}h" if remaining_minutes == 0 else f"{hours}h {remaining_minutes:02d}m"
 
     @staticmethod
-    def _prepare_test_rows(worksheet, test_count: int) -> int:
+    def _prepare_test_rows(
+        worksheet,
+        test_count: int,
+        test_row: int,
+        reserve_header_row: int,
+    ) -> int:
         extra_rows = max(0, test_count - 1)
         if extra_rows == 0:
             return 0
@@ -163,43 +205,93 @@ class ExcelLoader:
         affected_ranges = [
             (merged.min_row, merged.min_col, merged.max_row, merged.max_col)
             for merged in worksheet.merged_cells.ranges
-            if merged.max_row >= RESERVE_HEADER_ROW
+            if merged.max_row >= reserve_header_row
         ]
+
         for min_row, min_col, max_row, max_col in affected_ranges:
-            worksheet.unmerge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
-        worksheet.insert_rows(RESERVE_HEADER_ROW, amount=extra_rows)
+            worksheet.unmerge_cells(
+                start_row=min_row,
+                start_column=min_col,
+                end_row=max_row,
+                end_column=max_col,
+            )
+
+        worksheet.insert_rows(reserve_header_row, amount=extra_rows)
+
         for min_row, min_col, max_row, max_col in affected_ranges:
-            if min_row >= RESERVE_HEADER_ROW:
+            if min_row >= reserve_header_row:
                 min_row += extra_rows
                 max_row += extra_rows
             else:
                 max_row += extra_rows
-            worksheet.merge_cells(start_row=min_row, start_column=min_col, end_row=max_row, end_column=max_col)
 
-        for row in range(TEST_ROW + 1, TEST_ROW + test_count):
-            worksheet.row_dimensions[row].height = worksheet.row_dimensions[TEST_ROW].height
+            worksheet.merge_cells(
+                start_row=min_row,
+                start_column=min_col,
+                end_row=max_row,
+                end_column=max_col,
+            )
+
+        for row in range(test_row + 1, test_row + test_count):
+            worksheet.row_dimensions[row].height = (
+                worksheet.row_dimensions[test_row].height
+            )
+
             for column in range(1, worksheet.max_column + 1):
-                worksheet.cell(row, column)._style = copy(worksheet.cell(TEST_ROW, column)._style)
+                worksheet.cell(row, column)._style = copy(
+                    worksheet.cell(test_row, column)._style
+                )
+
             worksheet.merge_cells(
                 start_row=row,
                 start_column=TEST_DURATION_COLUMN,
                 end_row=row,
                 end_column=TEST_DURATION_MERGE_END_COLUMN,
             )
+
         return extra_rows
 
     @staticmethod
-    def _write_test_trains(worksheet, test_trains: list[TestTrainInput]) -> None:
+    def _write_test_trains(
+        worksheet,
+        test_trains: list[TestTrainInput],
+        test_row: int,
+    ) -> None:
         for offset, item in enumerate(test_trains):
-            row = TEST_ROW + offset
-            ExcelLoader._write(worksheet, row, TEST_TRAIN_COLUMN, item.train)
-            ExcelLoader._write(worksheet, row, TEST_PKS_COLUMN, item.pks)
-            ExcelLoader._write(worksheet, row, TEST_REGISTRATION_COLUMN, item.registration)
-            ExcelLoader._write(worksheet, row, TEST_FIXED_TEXT_COLUMN, "N/A")
-            ExcelLoader._write(worksheet, row, TEST_START_TIME_COLUMN, item.start_time)
-            ExcelLoader._write(worksheet, row, TEST_END_TIME_COLUMN, item.end_time)
-            ExcelLoader._write(worksheet, row, TEST_DURATION_COLUMN, ExcelLoader._duration_label(item.start_time, item.end_time))
-            for column in range(TEST_TRAIN_COLUMN, TEST_DURATION_COLUMN + 1):
+            row = test_row + offset
+
+            ExcelLoader._write(
+                worksheet, row, TEST_TRAIN_COLUMN, item.train
+            )
+            ExcelLoader._write(
+                worksheet, row, TEST_PKS_COLUMN, item.pks
+            )
+            ExcelLoader._write(
+                worksheet, row, TEST_REGISTRATION_COLUMN, item.registration
+            )
+            ExcelLoader._write(
+                worksheet, row, TEST_FIXED_TEXT_COLUMN, "N/A"
+            )
+            ExcelLoader._write(
+                worksheet, row, TEST_START_TIME_COLUMN, item.start_time
+            )
+            ExcelLoader._write(
+                worksheet, row, TEST_END_TIME_COLUMN, item.end_time
+            )
+            ExcelLoader._write(
+                worksheet,
+                row,
+                TEST_DURATION_COLUMN,
+                ExcelLoader._duration_label(
+                    item.start_time,
+                    item.end_time,
+                ),
+            )
+
+            for column in range(
+                TEST_TRAIN_COLUMN,
+                TEST_DURATION_COLUMN + 1,
+            ):
                 worksheet.cell(row, column).fill = WHITE_FILL
 
     @staticmethod

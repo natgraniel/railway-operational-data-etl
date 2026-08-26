@@ -18,7 +18,6 @@ def test_loader_writes_multiple_test_trains_and_preserves_schedule(tmp_path: Pat
     pdf = next(raw.glob("*.pdf"))
     docx = next(raw.glob("*.docx"))
     output = tmp_path / "Programa_actualizado.xlsx"
-    source_schedule = load_workbook(source, data_only=False)["DIARIO"]["F7"].value
 
     pdf_result = PDFExtractor().extract(str(pdf))
     word_result = WordExtractor().extract(str(docx))
@@ -38,6 +37,12 @@ def test_loader_writes_multiple_test_trains_and_preserves_schedule(tmp_path: Pat
         for update in transformed.commercial_updates
     ]
     validated = ValidationLayer().validate(transformed, WorkbookReader().read(str(source)))
+    first_ticket_update = validated.ticket_updates[0]
+    source_worksheet = load_workbook(source, data_only=False)["DIARIO"]
+    source_schedule = source_worksheet.cell(
+        row=first_ticket_update.target_row,
+        column=6,
+    ).value
 
     load_result = ExcelLoader().load(
         validated,
@@ -51,54 +56,101 @@ def test_loader_writes_multiple_test_trains_and_preserves_schedule(tmp_path: Pat
     )
     worksheet = load_workbook(output, data_only=False)["DIARIO"]
 
-    assert load_result.commercial_updates_written == 22
-    assert load_result.ticket_updates_written == 32
-    assert load_result.reserve_updates_written == 14
+    assert load_result.commercial_updates_written == len(
+        validated.commercial_updates
+    )
+    assert load_result.ticket_updates_written == len(
+        validated.ticket_updates
+    )
+    assert load_result.reserve_updates_written == len(
+        validated.reserve_updates
+    )
     assert load_result.test_train_written is True
-    assert worksheet["D7"].value == "L003"
+    first_commercial_update = validated.commercial_updates[0]
+    assert worksheet.cell(
+        row=first_commercial_update.target_row,
+        column=4,
+    ).value == first_commercial_update.registration
     merges = {str(merged) for merged in worksheet.merged_cells.ranges}
     # The source PDF combines 301-302, whose blocks are adjacent in Programa.
-    assert "D27:D34" in merges
+    assert "D28:D34" in merges
     # The PDF may list a pair in either order; the template's physical order
     # determines the vertical merge.
     assert "D35:D38" in merges
     assert "D39:D42" in merges
     # 601-604 share an MR in the PDF but are separated by 602-603 in Programa;
     # they must remain independent to avoid covering those intervening rows.
-    assert "D55:D56" in merges
-    assert "D61:D62" in merges
+    assert "D63:D64" in merges
+    assert "D69:D70" in merges
     # The commercial merge must end before the Pruebas section header.
-    assert "B67:I67" in merges
-    assert "D65:D66" in merges
-    assert "D65:D67" not in merges
+    assert "B75:I75" in merges
+    assert "D71:D72" in merges
+    assert "D71:D73" not in merges
     assert worksheet["D35"].font.name == "Noto Sans"
     assert worksheet["D35"].font.bold is True
     assert worksheet["D35"].font.sz == 12
-    assert worksheet["B3"].value == "10 Julio. 2026"
-    assert worksheet["B68"].value == "P009"
-    assert worksheet["C68"].value == "855+000 - 893+000"
-    assert worksheet["D68"].value == "R001 y R006"
-    assert worksheet["E68"].value == "N/A"
-    assert worksheet["F68"].value == "17:00"
-    assert worksheet["G68"].value == "03:00"
-    assert worksheet["H68"].value == "10h"
-    assert worksheet["B69"].value == "P020"
-    assert worksheet["C69"].value == "893+000 - 900+000"
-    assert worksheet["D69"].value == "N001"
-    assert worksheet["E69"].value == "N/A"
-    assert worksheet["F69"].value == "08:15"
-    assert worksheet["G69"].value == "10:45"
-    assert worksheet["H69"].value == "2h 30m"
-    assert worksheet["B68"].fill.fgColor.rgb == "00FFFFFF"
-    assert worksheet["H69"].fill.fgColor.rgb == "00FFFFFF"
-    assert "H69:I69" in {str(merged) for merged in worksheet.merged_cells.ranges}
-    assert worksheet["E7"].value == 134
-    assert worksheet["F7"].value == source_schedule
-    assert worksheet["B70"].value == "Reserva"
-    assert worksheet["D71"].value == "L007"
-    assert worksheet["E71"].value == "RESERVA EN ESTACION"
-    assert worksheet["E73"].value is None
-    assert all(
-        worksheet.cell(row, 5).value in (None, "RESERVA EN ESTACION")
-        for row in range(71, 71 + load_result.reserve_updates_written)
+    assert worksheet["B5"].value == "10 Julio. 2026"
+    test_header_row = ExcelLoader._find_section_row(worksheet, "Pruebas")
+    first_test_row = test_header_row + 1
+    second_test_row = test_header_row + 2
+
+    assert worksheet.cell(first_test_row, 2).value == "P009"
+    assert worksheet.cell(first_test_row, 3).value == "855+000 - 893+000"
+    assert worksheet.cell(first_test_row, 4).value == "R001 y R006"
+    assert worksheet.cell(first_test_row, 5).value == "N/A"
+    assert worksheet.cell(first_test_row, 6).value == "17:00"
+    assert worksheet.cell(first_test_row, 7).value == "03:00"
+    assert worksheet.cell(first_test_row, 8).value == "10h"
+
+    assert worksheet.cell(second_test_row, 2).value == "P020"
+    assert worksheet.cell(second_test_row, 3).value == "893+000 - 900+000"
+    assert worksheet.cell(second_test_row, 4).value == "N001"
+    assert worksheet.cell(second_test_row, 5).value == "N/A"
+    assert worksheet.cell(second_test_row, 6).value == "08:15"
+    assert worksheet.cell(second_test_row, 7).value == "10:45"
+    assert worksheet.cell(second_test_row, 8).value == "2h 30m"
+
+    assert worksheet.cell(first_test_row, 2).fill.fgColor.rgb == "00FFFFFF"
+    assert worksheet.cell(second_test_row, 8).fill.fgColor.rgb == "00FFFFFF"
+    assert f"H{second_test_row}:I{second_test_row}" in merges
+    assert worksheet.cell(
+        row=first_ticket_update.target_row,
+        column=5,
+    ).value == first_ticket_update.tickets_sold
+
+    assert worksheet.cell(
+        row=first_ticket_update.target_row,
+        column=6,
+    ).value == source_schedule
+    reserve_header_row = ExcelLoader._find_section_row(worksheet, "Reserva")
+    reserve_start_row = reserve_header_row + 1
+    reserve_end_row = reserve_start_row + load_result.reserve_updates_written
+
+    assert worksheet.cell(reserve_header_row, 2).value == "Reserva"
+
+    written_registrations = [
+        worksheet.cell(row, 4).value
+        for row in range(reserve_start_row, reserve_end_row)
+    ]
+    expected_registrations = [
+        update.registration
+        for update in validated.reserve_updates
+    ]
+
+    assert sorted(written_registrations) == sorted(expected_registrations)
+
+    written_statuses = [
+        worksheet.cell(row, 5).value
+        for row in range(reserve_start_row, reserve_end_row)
+    ]
+    expected_station_statuses = sum(
+        " ".join(update.status.upper().split()) == "RESERVA EN ESTACION"
+        for update in validated.reserve_updates
     )
+
+    assert written_statuses.count("RESERVA EN ESTACION") == expected_station_statuses
+    assert all(
+        status in (None, "", "RESERVA EN ESTACION")
+        for status in written_statuses
+    )
+    assert "RESERVA" not in written_statuses
